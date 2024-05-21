@@ -5,6 +5,8 @@ const LocalStrategy = require('passport-local').Strategy
 const jwt = require('jsonwebtoken')
 const cookieParser = require('cookie-parser')
 const JwtStrategy = require('passport-jwt').Strategy
+const CustomStrategy = require('passport-custom').Strategy
+
 
 const sqlite3 = require('better-sqlite3');
 // -------- oauth optional
@@ -16,6 +18,17 @@ const axios = require('axios')
 const session = require('express-session')
 
 const { Issuer, Strategy: OpenIDConnectStrategy } = require('openid-client')
+// -------------- RADIUS
+
+const Radius_Client = require('node-radius-client');
+const {
+  dictionaries: {
+    rfc2865: {
+      file,
+      attributes,
+    },
+  },
+} = require('node-radius-utils');
 
 //-----------------------
 const jwtSecret = require('crypto').randomBytes(16) // 16*8=256 random bits 
@@ -336,6 +349,65 @@ async function main () {
 		await create_JWT(req, res, req.user.email, oauth=true) //The only difference is that now the sub claim will be set to req.user.email
 	})
   	//// ------------------------------
+  	
+  	//// -------------- RADIUS ----------------
+  	passport.use('radius',
+        new CustomStrategy(
+            async function (req, done) {
+                const username = req.body.username
+                const password = req.body.password
+
+                const r_client = new Radius_Client({
+			  host: process.env.RADIUS_HOST, //'127.0.0.1'
+			  dictionaries: [
+			    file,
+			  ],
+			});
+
+                try {
+		   const response = await r_client.accessRequest({
+			  secret: process.env.RADIUS_SECRET,
+			  attributes: [
+			    [attributes.USER_NAME, username + "@upc.edu"],
+			    [attributes.USER_PASSWORD, password],
+			  ],
+			})
+			/*
+			.then((result) => {
+			  console.log('result', result);
+			}).catch((error) => {
+			  console.log('error', error);
+			});
+			*/
+
+                    if (response.code === 'Access-Accept') {
+                        const user = {
+                            username: username,
+                            description: 'the "only" user that deserves to get to this server'
+                        }
+                        return done(null, user)
+                    }
+                } catch (error) {
+                    console.error(error)
+                }
+                return done(null, false)
+            }
+          )
+    	)
+    	
+    	app.get('/radiusLogin',
+        (req, res) => {
+            res.sendFile('radiusLogin.html', { root: __dirname })
+        }
+    )
+
+        app.post('/radiusLogin',
+		passport.authenticate('radius', { session: false, failureRedirect: '/radiusLogin' }), // we indicate that this endpoint must pass through our 'username-password' passport strategy, which we defined before
+		async (req, res) => {
+		    await create_JWT(req, res)
+		}
+	    )
+  	//// ----------------------------
 
 	app.get('/',
 	  passport.authenticate(
